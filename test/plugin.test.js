@@ -6,6 +6,7 @@
 import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -138,5 +139,58 @@ describe('a one-shot build', () => {
         const codes = (report.warnings ?? []).map(w => w.code)
         assert.ok(codes.some(c => c.startsWith('lighthouse-')),
             `lighthouse findings must be in the document\n${codes.join(', ')}`)
+    })
+})
+
+// "The dev loop" is not "watch mode", and conflating the two made this plugin
+// never run at all on the projects it was written for.
+//
+// An instance is ALWAYS in watch or server mode, and a build a person types
+// while one is running is FORWARDED to it — so a skip keyed on `watch` skipped
+// every build on a project whose documented model is a watcher always up. The
+// audit never ran, on either side, and said nothing. Core answers the real
+// question with `runtime.options.requested`: true for a build a client asked
+// for, false for a cycle the watcher triggered itself.
+
+describe('a build typed while a watcher is running', () => {
+    let workdir, instance
+    after(async () => {
+        instance?.kill()
+        await rm(workdir, { recursive: true, force: true })
+    })
+
+    it('is audited — it is a build someone is waiting on', async () => {
+        workdir = await fixture()
+        await build(workdir, [], 180_000)
+
+        instance = spawn(process.execPath,
+            ['--no-warnings', path.join(SIBLINGS, 'mikser-io', 'app.js'),
+                '--working-folder', workdir, '--watch'],
+            { cwd: path.join(SIBLINGS, 'mikser-io'), stdio: ['ignore', 'pipe', 'pipe'],
+              env: { ...process.env, NO_COLOR: '1' } })
+        let instanceOut = ''
+        instance.stdout.on('data', d => instanceOut += d)
+        instance.stderr.on('data', d => instanceOut += d)
+
+        const endpoint = path.join(SIBLINGS, 'mikser-io')
+        for (let i = 0; i < 200 && !instanceOut.includes('Instance socket'); i++) {
+            await new Promise(r => setTimeout(r, 100))
+        }
+        assert.ok(instanceOut.includes('Instance socket'), `the instance must be listening\n${instanceOut}`)
+
+        const { out } = await build(workdir, ['--force'], 180_000)
+        assert.match(out, /\[lighthouse-scores\]/,
+            `a forwarded build is one a person is waiting on\n${out}`)
+
+        // And the watcher's own cycle is not. Counted from the instance's own
+        // output: one audit happened (the forwarded one, replayed there too),
+        // and editing a document adds none.
+        const before = (instanceOut.match(/\[lighthouse-scores\]/g) ?? []).length
+        await writeFile(path.join(workdir, 'documents/index.html'),
+            '---\nlayout: page\ntitle: edited\n---\n')
+        await new Promise(r => setTimeout(r, 9000))
+        const after = (instanceOut.match(/\[lighthouse-scores\]/g) ?? []).length
+        assert.equal(after, before,
+            `an edit must not cost six seconds a save\n${instanceOut.slice(-800)}`)
     })
 })

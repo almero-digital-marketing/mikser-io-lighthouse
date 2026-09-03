@@ -40,11 +40,18 @@ export function lighthouseAudit(options = {}) {
             const outputFolder = runtime.options?.outputFolder
             if (!outputFolder) return
 
-            // Never in the dev loop. Six seconds a page against a watcher that
-            // rebuilds on save is not a trade anyone would take, and a plugin
-            // that makes the loop unusable gets deleted rather than
-            // configured. `always: true` for someone who wants it anyway.
-            if (!options.always && (runtime.options.watch || runtime.options.server)) {
+            // Never in the dev loop — but "the dev loop" is not "watch mode".
+            //
+            // An instance is ALWAYS in watch or server mode, and a build a
+            // person typed while one is running is FORWARDED to it. Skipping
+            // on `watch` alone therefore skipped every build on a project whose
+            // documented model is a watcher always up: the audit never ran, on
+            // either side, and said nothing. `requested` is core's answer to
+            // "is someone waiting on this", and it is what the cost argument
+            // was always about.
+            const devLoop = (runtime.options.watch || runtime.options.server)
+                && !runtime.options.requested
+            if (!options.always && devLoop) {
                 logger.debug('Lighthouse skipped: watch/server mode, where a six-second audit per page '
                     + 'would cost more than it tells you. Run a one-shot build, or set always: true.')
                 return
