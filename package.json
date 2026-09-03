@@ -1,0 +1,29 @@
+{
+  "name": "mikser-io-lighthouse",
+  "version": "1.0.0",
+  "description": "Lighthouse audit of the output a mikser build produced — the checks that genuinely need a browser",
+  "main": "index.js",
+  "type": "module",
+  "files": ["index.js", "src", "README.md", "LICENSE"],
+  "scripts": {
+    "test": "node --no-warnings --test --test-reporter=spec 'test/**/*.test.js'"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/almero-digital-marketing/mikser-io-lighthouse.git"
+  },
+  "keywords": ["mikser", "mikser-io", "lighthouse", "performance", "accessibility", "seo", "audit"],
+  "license": "MIT",
+  "bugs": { "url": "https://github.com/almero-digital-marketing/mikser-io-lighthouse/issues" },
+  "homepage": "https://github.com/almero-digital-marketing/mikser-io-lighthouse#readme",
+  "dependencies": {
+    "chrome-launcher": "^1.2.0",
+    "lighthouse": "^13.0.0"
+  },
+  "peerDependencies": {
+    "mikser-io": "^9.98.0"
+  },
+  "devDependencies": {
+    "mikser-io": "file:../mikser-io"
+  }
+}
