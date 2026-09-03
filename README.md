@@ -21,18 +21,32 @@ loading the page.
 
 This loads it, and pays for that honestly.
 
-## When it runs, and why not always
+## When it runs
+
+Only when you ask:
+
+```bash
+mikser --lighthouse
+```
 
 A real audit of a trivial page takes **about six seconds**. On thirteen pages
-that is a minute and a half.
+that is a minute and a half — so it is opt-in rather than
+not-prevented.
 
-So it does **not** run in `--watch` or `--server` mode. A project whose
-documented dev model is a watcher always up would pay six seconds a keystroke,
-and a check that makes the loop unusable is a check that gets deleted rather
-than configured. One-shot builds — CI, and a deliberate local run — pay for it.
+The first version keyed off "not watch or server" instead, which was wrong for
+exactly the projects this is written for. Where a watcher is always up, the
+builds that are *neither* are the ones an upgrade script runs — nine per
+release check — and every one of them audited: three minutes added to a
+two-minute check. `requested` does not separate those either, because a
+verification build is exactly as requested as a person typing one. What
+distinguishes them is intent, and only a caller can state it.
+
+The flag works with nothing listening and forwarded to a running watcher alike.
+It needs `mikser-io@9.100.0`, which is where a plugin can declare an option at
+all.
 
 ```js
-lighthouse({ always: true })   // audit in watch mode too, if you insist
+lighthouse({ always: true })   // audit every build, if a project wants that
 ```
 
 It also stands down when the build has render errors, for the same reason lint

@@ -24,6 +24,7 @@ import { access, constants } from 'node:fs/promises'
 import lighthouse from 'lighthouse'
 import * as chromeLauncher from 'chrome-launcher'
 
+import { cliOption } from 'mikser-io'
 import { serveOutput } from './src/serve.js'
 
 const CATEGORIES = ['performance', 'accessibility', 'best-practices', 'seo']
@@ -35,27 +36,31 @@ const DEFAULT_THRESHOLD = 90
 
 export function lighthouseAudit(options = {}) {
     return ({ runtime, onFinalized, useLogger }) => {
+        cliOption('--lighthouse',
+            'audit the built pages with Lighthouse — performance, accessibility, best practices '
+            + 'and SEO. Loads each page in Chrome, so it costs about six seconds per page and is '
+            + 'never run unless asked for.')
+
         onFinalized(async () => {
             const logger = useLogger()
             const outputFolder = runtime.options?.outputFolder
             if (!outputFolder) return
 
-            // Never in the dev loop — but "the dev loop" is not "watch mode".
+            // Asked for, or not run.
             //
-            // An instance is ALWAYS in watch or server mode, and a build a
-            // person typed while one is running is FORWARDED to it. Skipping
-            // on `watch` alone therefore skipped every build on a project whose
-            // documented model is a watcher always up: the audit never ran, on
-            // either side, and said nothing. `requested` is core's answer to
-            // "is someone waiting on this", and it is what the cost argument
-            // was always about.
-            const devLoop = (runtime.options.watch || runtime.options.server)
-                && !runtime.options.requested
-            if (!options.always && devLoop) {
-                logger.debug('Lighthouse skipped: watch/server mode, where a six-second audit per page '
-                    + 'would cost more than it tells you. Run a one-shot build, or set always: true.')
-                return
-            }
+            // "Not watch or server" was the wrong question. On a project whose
+            // dev model is a watcher always up, the builds that are neither
+            // are the ones an upgrade script runs — nine per release check,
+            // each auditing, three minutes added to a two-minute check. And
+            // `requested` cannot separate those: a verification build is
+            // exactly as requested as a person typing one. What distinguishes
+            // them is INTENT, and only the caller can state it.
+            //
+            // So it is a flag: on --help beside the other checks, refused out
+            // loud when misspelled, and impossible to trigger by accident from
+            // a script that only wanted a build. `always: true` in config for
+            // a project that wants every build audited.
+            if (!options.always && !runtime.options.lighthouse) return
 
             // After a successful BUILD, for the same reason lint is: auditing
             // half a site reports on documents that were never finished, and

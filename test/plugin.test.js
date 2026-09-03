@@ -74,7 +74,7 @@ describe('a chrome that cannot be started', () => {
         // died with a Node stack dump. A pinned Chrome that moved is the
         // ordinary way to get there.
         workdir = await fixture("{ chromePath: '/nonexistent/chrome' }")
-        const { code, out } = await build(workdir)
+        const { code, out } = await build(workdir, ['--lighthouse'])
         assert.equal(code, 0, `a missing browser must not fail the build\n${out}`)
         assert.match(out, /\[lighthouse-unavailable\]/, out)
         assert.doesNotMatch(out, /Unhandled 'error' event/, `it used to crash here\n${out}`)
@@ -86,7 +86,7 @@ describe('the dev loop', () => {
     let workdir
     after(() => rm(workdir, { recursive: true, force: true }))
 
-    it('is not audited, because six seconds a save is not a trade anyone takes', async () => {
+    it('is not audited without the flag, whatever mode the build is in', async () => {
         // The documented dev model is a watcher always up. A plugin that makes
         // that loop unusable gets deleted rather than configured.
         workdir = await fixture()
@@ -113,7 +113,7 @@ describe('a one-shot build', () => {
         // "No output" and "not run" look identical otherwise, and this plugin
         // is skipped often enough that the difference matters.
         workdir = await fixture()
-        const { code, out } = await build(workdir, [], 180_000)
+        const { code, out } = await build(workdir, ['--lighthouse'], 180_000)
         assert.equal(code, 0, out)
         assert.match(out, /\[lighthouse-scores\]/, `a passing audit is worth saying\n${out}`)
         assert.match(out, /performance \d+/, out)
@@ -126,7 +126,7 @@ describe('a one-shot build', () => {
         const { stdout } = await new Promise((resolve, reject) => {
             const child = spawn(process.execPath,
                 ['--no-warnings', path.join(SIBLINGS, 'mikser-io', 'app.js'),
-                    '--working-folder', workdir, '--force', '--json'],
+                    '--working-folder', workdir, '--force', '--lighthouse', '--json'],
                 { cwd: path.join(SIBLINGS, 'mikser-io'), stdio: ['ignore', 'pipe', 'pipe'],
                   env: { ...process.env, NO_COLOR: '1' } })
             let stdout = ''
@@ -159,7 +159,7 @@ describe('a build typed while a watcher is running', () => {
         await rm(workdir, { recursive: true, force: true })
     })
 
-    it('is audited — it is a build someone is waiting on', async () => {
+    it('is audited when the flag is passed, and not otherwise', async () => {
         workdir = await fixture()
         await build(workdir, [], 180_000)
 
@@ -178,9 +178,20 @@ describe('a build typed while a watcher is running', () => {
         }
         assert.ok(instanceOut.includes('Instance socket'), `the instance must be listening\n${instanceOut}`)
 
-        const { out } = await build(workdir, ['--force'], 180_000)
+        // A plain forwarded build must not audit — an upgrade script runs
+        // nine of these per release check, and each one auditing added three
+        // minutes to a two-minute check.
+        const plain = await build(workdir, ['--force'], 180_000)
+        assert.doesNotMatch(plain.out, /\[lighthouse-scores\]/,
+            `only an explicit ask audits\n${plain.out}`)
+
+        // And the flag has to survive forwarding: the instance parsed its own
+        // argv and never saw the client's, so a plugin option that does not
+        // travel works with nothing listening and silently does nothing with a
+        // watcher up.
+        const { out } = await build(workdir, ['--force', '--lighthouse'], 180_000)
         assert.match(out, /\[lighthouse-scores\]/,
-            `a forwarded build is one a person is waiting on\n${out}`)
+            `--lighthouse must reach the instance answering the build\n${out}`)
 
         // And the watcher's own cycle is not. Counted from the instance's own
         // output: one audit happened (the forwarded one, replayed there too),
