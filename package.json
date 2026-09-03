@@ -1,6 +1,6 @@
 {
   "name": "mikser-io-lighthouse",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Lighthouse audit of the output a mikser build produced — the checks that genuinely need a browser",
   "main": "index.js",
   "type": "module",
@@ -36,7 +36,7 @@
     "lighthouse": "^13.0.0"
   },
   "peerDependencies": {
-    "mikser-io": "^9.100.0"
+    "mikser-io": "^9.101.0"
   },
   "devDependencies": {
     "mikser-io": "file:../mikser-io"

@@ -34,6 +34,28 @@ const CATEGORIES = ['performance', 'accessibility', 'best-practices', 'seo']
 // and the number a person sees in Chrome agree about what passing means.
 const DEFAULT_THRESHOLD = 90
 
+// Audits that measure THIS PLUGIN'S SERVER rather than the deployment.
+//
+// The output is served from an ephemeral loopback process for the length of
+// the audit — that is deliberate, and it is why the result does not depend on
+// whether a dev server happens to be running. The cost is that anything
+// header-shaped or transport-shaped is a fact about that throwaway server:
+// cache lifetimes are nginx's in production, compression is nginx's, the
+// response time is a local file read.
+//
+// Reported downstream as a finding that is "right about what it measured and
+// unactionable by construction". Excluded rather than explained away, because
+// a finding nobody can act on trains a reader to skim the ones they can. A
+// project that fronts its own server can put them back through `audits`.
+const SERVER_SHAPED_AUDITS = new Set([
+    'uses-long-cache-ttl',
+    'cache-insight',
+    'uses-text-compression',
+    'server-response-time',
+    'redirects',
+    'uses-http2',
+])
+
 export function lighthouseAudit(options = {}) {
     return ({ runtime, onFinalized, useLogger }) => {
         cliOption('--lighthouse',
@@ -66,9 +88,26 @@ export function lighthouseAudit(options = {}) {
             // half a site reports on documents that were never finished, and
             // every one of those findings is noise on top of the error that
             // already explains it.
-            const { renderErrorCount } = await import('mikser-io')
+            const { renderErrorCount, cycleMovedNothing } = await import('mikser-io')
             if (renderErrorCount()) {
-                logger.debug('Lighthouse skipped: the build has render errors to fix first')
+                // Loud, not debug: the flag was passed, so someone is waiting
+                // for scores and getting none. "Audited and fine" and "did not
+                // run" are indistinguishable otherwise — the argument this
+                // plugin already makes one level down about printing scores
+                // even when they pass applies to the stand-down itself.
+                logger.warn({ code: 'lighthouse-not-run', reason: 'render-errors' },
+                    'Lighthouse did not run: the build has render errors, so half the site is on disk '
+                    + 'and auditing it would report on documents that were never finished.')
+                return
+            }
+
+            // A cycle that moved nothing produced the bytes the last one did,
+            // so the audit would reprint the last audit — for six seconds a
+            // page. Measured downstream at 19s for a no-op build.
+            if (cycleMovedNothing()) {
+                logger.warn({ code: 'lighthouse-not-run', reason: 'nothing-changed' },
+                    'Lighthouse did not run: nothing rendered and nothing changed, so the output is '
+                    + 'the one the last audit already scored. Use --force to re-render and audit again.')
                 return
             }
 
@@ -137,7 +176,11 @@ export function lighthouseAudit(options = {}) {
                 return
             }
 
+            const excluded = options.audits === false
+                ? new Set()
+                : new Set([...SERVER_SHAPED_AUDITS, ...(options.excludeAudits ?? [])])
             const scores = []
+            const skippedAudits = new Set()
             const failures = new Map()
             try {
                 for (const page of pages) {
@@ -163,6 +206,7 @@ export function lighthouseAudit(options = {}) {
 
                     for (const audit of Object.values(result.lhr.audits)) {
                         if (audit.score === null || audit.score >= 1) continue
+                        if (excluded.has(audit.id)) { skippedAudits.add(audit.id); continue }
                         if (!failures.has(audit.id)) {
                             failures.set(audit.id, { title: audit.title, pages: [] })
                         }
@@ -217,9 +261,24 @@ export function lighthouseAudit(options = {}) {
                 logger.warn({ code: `lighthouse-${id}`, audit: id, pages: on.length },
                     '%s — %s (on %d page(s))', id, title, on.length)
             }
+            if (skippedAudits.size) {
+                // Split, because the two reasons are different and lumping
+                // them would misdescribe whichever list the reader cares
+                // about: one is this plugin's own doing, the other is theirs.
+                const serverShaped = [...skippedAudits].filter(id => SERVER_SHAPED_AUDITS.has(id)).sort()
+                const asked = [...skippedAudits].filter(id => !SERVER_SHAPED_AUDITS.has(id)).sort()
+                if (serverShaped.length) {
+                    logger.info('Not reported — these measure the audit server rather than your '
+                        + 'deployment (cache headers, compression and response time are your host\'s): %s',
+                        serverShaped.join(', '))
+                }
+                if (asked.length) {
+                    logger.info('Not reported — excluded by config: %s', asked.join(', '))
+                }
+            }
             if (ordered.length) {
                 logger.warn({ code: 'lighthouse-summary', audits: ordered.length,
-                    pages: scores.length, threshold },
+                    pages: scores.length, threshold, excluded: [...skippedAudits].sort() },
                     '%d failing audit(s) across %d page(s)%s. These needed a browser — everything a '
                     + 'parser could have told you is in the lint pass instead.',
                     ordered.length, scores.length,

@@ -35,7 +35,10 @@ function build(workdir, args = [], timeout = 120_000) {
 const PAGE = [
     '<!doctype html><html lang="en"><head><meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width,initial-scale=1"><title>Home</title>',
-    '</head><body><h1>Home</h1><p>A page.</p></body></html>',
+    // The img is deliberate: it fails `unsized-images`, which is the only
+    // way to exercise the exclusion path without a page that trips a
+    // server-shaped audit — a trivial local page trips none of those.
+    '</head><body><h1>Home</h1><p>A page.</p><img src="/a.png" alt="a"></body></html>',
 ].join('\n')
 
 async function fixture(pluginArgs = '') {
@@ -203,5 +206,66 @@ describe('a build typed while a watcher is running', () => {
         const after = (instanceOut.match(/\[lighthouse-scores\]/g) ?? []).length
         assert.equal(after, before,
             `an edit must not cost six seconds a save\n${instanceOut.slice(-800)}`)
+    })
+})
+
+// A cycle that moved nothing produced the bytes the last one did, so the audit
+// would reprint the last audit — for six seconds a page. Measured downstream
+// at 19 SECONDS for a no-op build, which is what a settled tree costs on every
+// verification run.
+//
+// And the stand-down is LOUD. The flag was passed, so someone is waiting for
+// scores and getting none; "audited and fine" and "did not run" are
+// indistinguishable otherwise. That is the argument this plugin already makes
+// one level down about printing scores even when they pass, applied to the
+// skip itself.
+
+describe('a build that moved nothing', () => {
+    let workdir
+    after(() => rm(workdir, { recursive: true, force: true }))
+
+    it('is not audited, and says so rather than costing six seconds a page', async () => {
+        workdir = await fixture()
+        // First build renders; second moves nothing.
+        await build(workdir, ['--lighthouse'], 180_000)
+
+        const started = Date.now()
+        const { code, out } = await build(workdir, ['--lighthouse'], 180_000)
+        const elapsed = Date.now() - started
+
+        assert.equal(code, 0, out)
+        assert.match(out, /\[lighthouse-not-run\]/,
+            `a stand-down someone asked for has to say why\n${out}`)
+        assert.match(out, /nothing rendered and nothing changed/, out)
+        assert.doesNotMatch(out, /\[lighthouse-scores\]/, 'and must not have audited')
+        assert.ok(elapsed < 8000,
+            `a no-op must not pay for an audit; took ${elapsed}ms`)
+    })
+
+    it('audits again under --force, which is the way back', async () => {
+        const { out } = await build(workdir, ['--lighthouse', '--force'], 180_000)
+        assert.match(out, /\[lighthouse-scores\]/, out)
+    })
+})
+
+describe('audits that measure the audit server', () => {
+    let workdir
+    after(() => rm(workdir, { recursive: true, force: true }))
+
+    it('are excluded, because they are unactionable by construction', async () => {
+        // The output is served from an ephemeral loopback process, so cache
+        // lifetimes, compression and response time are facts about that
+        // throwaway server — in production they are nginx's. A finding nobody
+        // can act on trains a reader to skim the ones they can.
+        //
+        // Exercised through `excludeAudits` with an audit this page really
+        // does fail, since a trivial local page does not trip the
+        // server-shaped ones on its own.
+        workdir = await fixture("{ excludeAudits: ['unsized-images'] }")
+        const { out } = await build(workdir, ['--lighthouse'], 180_000)
+        assert.match(out, /Not reported — excluded by config: unsized-images/, out)
+        assert.doesNotMatch(out, /\[lighthouse-unsized-images\]/,
+            `an excluded audit must not also be reported\n${out}`)
+        assert.match(out, /\[lighthouse-summary\]/, out)
     })
 })
