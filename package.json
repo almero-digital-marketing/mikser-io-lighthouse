@@ -1,7 +1,7 @@
 {
   "name": "mikser-io-lighthouse",
-  "version": "2.0.0",
-  "description": "Lighthouse audit of the output a mikser build produced \u2014 the checks that genuinely need a browser",
+  "version": "2.1.0",
+  "description": "Lighthouse audit of the output a mikser build produced — the checks that genuinely need a browser",
   "main": "index.js",
   "type": "module",
   "files": [

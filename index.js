@@ -40,8 +40,17 @@ const DEFAULT_THRESHOLD = 90
 // the audit — that is deliberate, and it is why the result does not depend on
 // whether a dev server happens to be running. The cost is that anything
 // header-shaped or transport-shaped is a fact about that throwaway server:
-// cache lifetimes are nginx's in production, compression is nginx's, the
-// response time is a local file read.
+// cache lifetimes are nginx's in production and the response time is a local
+// file read.
+//
+// Compression is the exception, and it is not excluded-and-forgotten. The
+// server COMPRESSES the way a configured host does, because the score is not
+// only made of these line items: Lighthouse derives FCP and LCP from the bytes
+// that actually arrive, so serving text uncompressed depresses the score
+// against a production that compresses — and the audit is then pessimistic in
+// a way no line item explains. The audit below stays excluded because whether
+// the real host is configured is still the host's fact, not the site's; the
+// server models a host that is.
 //
 // Reported downstream as a finding that is "right about what it measured and
 // unactionable by construction". Excluded rather than explained away, because

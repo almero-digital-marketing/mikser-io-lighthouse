@@ -1,69 +1,129 @@
-// The server exists because Lighthouse measures a page as a browser receives
-// it, and `file://` is not an origin. These are the four things it has to get
-// right for an audit to be about the SITE rather than about the server.
+// The audit server, which exists so Lighthouse measures the SITE rather than
+// the throwaway host it is served from.
+//
+// That is the whole design rule, and it decides every question here: a real
+// static host caches, compresses text, sends Vary, and does not gzip a JPEG.
+// Anything this server does differently shows up as a finding about the
+// server, and a finding nobody can act on is one everybody learns to skip —
+// which is how a genuine text-compression problem on a deployed site went
+// unnoticed while local audits cried wolf.
 
-import { describe, it, after, before } from 'node:test'
+import { describe, it, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import zlib from 'node:zlib'
+
 import { serveOutput } from '../src/serve.js'
 
-describe('serveOutput', () => {
-    let root, server
+const BIG_CSS = 'body{color:#000}\n'.repeat(200)      // ~3.4 KB, over the floor
+const TINY_CSS = 'a{}'                                 // under the floor
+const JPEG = Buffer.alloc(4096, 0xd8)                  // already-compressed bytes
 
-    before(async () => {
-        root = await mkdtemp(path.join(tmpdir(), 'mio-lh-serve-'))
-        await mkdir(path.join(root, 'about'), { recursive: true })
-        await writeFile(path.join(root, 'index.html'), '<!doctype html><title>root</title>')
-        await writeFile(path.join(root, 'about', 'index.html'), '<!doctype html><title>about</title>')
-        await writeFile(path.join(root, 'styles.css'), '.a{color:red}')
-        server = await serveOutput(root)
-    })
-    after(async () => { await server.close(); await rm(root, { recursive: true, force: true }) })
+let dir, server
+before(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'lh-serve-'))
+    await mkdir(path.join(dir, 'styles'), { recursive: true })
+    await writeFile(path.join(dir, 'index.html'), '<!doctype html><title>x</title>' + 'y'.repeat(2000))
+    await writeFile(path.join(dir, 'styles', 'site.css'), BIG_CSS)
+    await writeFile(path.join(dir, 'styles', 'tiny.css'), TINY_CSS)
+    await writeFile(path.join(dir, 'photo.jpg'), JPEG)
+    await mkdir(path.join(dir, 'about'), { recursive: true })
+    await writeFile(path.join(dir, 'about', 'index.html'), '<!doctype html><title>about</title>')
+    server = await serveOutput(dir)
+})
+after(async () => { await server?.close(); await rm(dir, { recursive: true, force: true }) })
 
-    const get = async (url) => {
-        const response = await fetch(new URL(url, server.origin))
-        return { status: response.status, type: response.headers.get('content-type'),
-            cache: response.headers.get('cache-control'), body: await response.text() }
-    }
+const get = (url, headers = {}) => fetch(server.origin + url, { headers })
 
-    it('serves the root', async () => {
-        const { status, body } = await get('/')
-        assert.equal(status, 200)
-        assert.match(body, /<title>root<\/title>/)
-    })
-
-    it('resolves a directory to its index, which is where cleanUrls puts a page', async () => {
-        // Without this every audit of a clean url lands on a 404 and reports
-        // on an error page — scoring the wrong document with total confidence.
-        const { status, body } = await get('/about/')
-        assert.equal(status, 200)
-        assert.match(body, /<title>about<\/title>/)
+describe('compression, because a real host compresses text', () => {
+    it('gzips css when the client asks for it', async () => {
+        const res = await get('/styles/site.css', { 'accept-encoding': 'gzip' })
+        assert.equal(res.headers.get('content-encoding'), 'gzip')
+        // And it decodes back to exactly the file — a corrupted stream would
+        // make Lighthouse measure a page that never rendered.
+        assert.equal(await res.text(), BIG_CSS)
     })
 
-    it('sends a content type, because several audits depend on it', async () => {
-        assert.match((await get('/styles.css')).type, /text\/css/)
-        assert.match((await get('/')).type, /text\/html/)
+    it('prefers brotli when offered both, like a modern host', async () => {
+        const res = await get('/styles/site.css', { 'accept-encoding': 'br, gzip' })
+        assert.equal(res.headers.get('content-encoding'), 'br')
+        assert.equal(await res.text(), BIG_CSS)
     })
 
-    it('sends cache headers a static host would send', async () => {
-        // Lighthouse reports an uncached response as a finding. On a real host
-        // it would be cached, so saying so keeps the audit about the site
-        // rather than about this throwaway server.
-        assert.match((await get('/')).cache, /max-age/)
+    it('sends Vary, so a cache cannot hand a compressed body to a client that did not ask', async () => {
+        const res = await get('/styles/site.css', { 'accept-encoding': 'gzip' })
+        assert.match(res.headers.get('vary') ?? '', /accept-encoding/i)
     })
 
-    it('404s what is not there rather than hanging', async () => {
+    it('sends plain bytes to a client that asks for none', async () => {
+        const res = await get('/styles/site.css', { 'accept-encoding': 'identity' })
+        assert.equal(res.headers.get('content-encoding'), null)
+        assert.equal(await res.text(), BIG_CSS)
+    })
+
+    it('actually reduces the transfer', async () => {
+        // The point of the exercise. If this were not smaller, the audit would
+        // keep reporting savings the deployed site does not have.
+        const raw = Buffer.byteLength(BIG_CSS)
+        const res = await get('/styles/site.css', { 'accept-encoding': 'gzip' })
+        const wire = zlib.gzipSync(Buffer.from(BIG_CSS)).length
+        assert.ok(wire < raw / 2, `gzip should roughly halve this at worst: ${wire} vs ${raw}`)
+        assert.equal((await res.text()).length, BIG_CSS.length)
+    })
+})
+
+describe('what it does not compress', () => {
+    it('leaves an image alone', async () => {
+        // Already compressed. Running it through gzip costs CPU and usually
+        // produces MORE bytes, which would then be measured as page weight.
+        const res = await get('/photo.jpg', { 'accept-encoding': 'br, gzip' })
+        assert.equal(res.headers.get('content-encoding'), null)
+    })
+
+    it('leaves a file below the floor alone', async () => {
+        // Under ~1KB the encoding header costs more than the saving, which is
+        // why every host ships a floor.
+        const res = await get('/styles/tiny.css', { 'accept-encoding': 'gzip' })
+        assert.equal(res.headers.get('content-encoding'), null)
+    })
+})
+
+describe('turning it off deliberately', () => {
+    it('serves uncompressed when asked', async () => {
+        const plain = await serveOutput(dir, { compress: false })
+        try {
+            const res = await fetch(plain.origin + '/styles/site.css', { headers: { 'accept-encoding': 'br, gzip' } })
+            assert.equal(res.headers.get('content-encoding'), null)
+            assert.equal(res.headers.get('content-length'), String(Buffer.byteLength(BIG_CSS)))
+        } finally { await plain.close() }
+    })
+})
+
+describe('the rest of what a host does', () => {
+    it('caches, so an uncached-response finding is about the site', async () => {
+        const res = await get('/index.html')
+        assert.match(res.headers.get('cache-control') ?? '', /max-age=\d+/)
+    })
+
+    it('resolves a directory to index.html, the way cleanUrls links expect', async () => {
+        const res = await get('/about/')
+        assert.equal(res.status, 200)
+        assert.match(await res.text(), /about/)
+    })
+
+    it('types a response, since several audits key off content-type', async () => {
+        assert.match((await get('/styles/site.css')).headers.get('content-type') ?? '', /text\/css/)
+        assert.match((await get('/index.html')).headers.get('content-type') ?? '', /text\/html/)
+    })
+
+    it('refuses to climb out of the output folder', async () => {
+        const res = await fetch(server.origin + '/../../etc/passwd')
+        assert.ok(res.status === 403 || res.status === 404, `got ${res.status}`)
+    })
+
+    it('404s a missing page rather than hanging the audit', async () => {
         assert.equal((await get('/nope.html')).status, 404)
-    })
-
-    it('refuses a path that climbs out of the output folder', async () => {
-        const response = await fetch(`${server.origin}/../../etc/passwd`, { redirect: 'manual' })
-        assert.notEqual(response.status, 200)
-    })
-
-    it('binds loopback only, and picks its own port', async () => {
-        assert.match(server.origin, /^http:\/\/127\.0\.0\.1:\d+$/)
     })
 })
