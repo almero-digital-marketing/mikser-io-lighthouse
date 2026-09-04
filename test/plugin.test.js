@@ -16,6 +16,19 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
 const SIBLINGS = path.resolve(ROOT, '..')
 
+// These drive a REAL mikser build by spawning the engine's app.js out of the
+// sibling checkout. That exists in the workspace these packages are developed
+// in and nowhere else — app.js is not even shipped in the published mikser-io
+// package. A standalone clone, which is what CI checks out, has no siblings.
+//
+// Skipped rather than failed: a missing neighbouring repository is not a
+// defect in this package, and a red release for it would teach people to
+// ignore red releases.
+const describeWithEngine = existsSync(path.join(SIBLINGS, 'mikser-io', 'app.js'))
+    ? describe
+    : describe.skip
+
+
 function build(workdir, args = [], timeout = 120_000) {
     return new Promise((resolve, reject) => {
         const child = spawn(process.execPath,
@@ -66,7 +79,7 @@ export default { plugins: [documents(), frontMatter(), layouts(), renderHbs(), l
     return workdir
 }
 
-describe('a chrome that cannot be started', () => {
+describeWithEngine('a chrome that cannot be started', () => {
     let workdir
     after(() => rm(workdir, { recursive: true, force: true }))
 
@@ -85,7 +98,7 @@ describe('a chrome that cannot be started', () => {
     })
 })
 
-describe('the dev loop', () => {
+describeWithEngine('the dev loop', () => {
     let workdir
     after(() => rm(workdir, { recursive: true, force: true }))
 
@@ -108,7 +121,7 @@ describe('the dev loop', () => {
     })
 })
 
-describe('a one-shot build', () => {
+describeWithEngine('a one-shot build', () => {
     let workdir
     after(() => rm(workdir, { recursive: true, force: true }))
 
@@ -155,7 +168,7 @@ describe('a one-shot build', () => {
 // question with `runtime.options.requested`: true for a build a client asked
 // for, false for a cycle the watcher triggered itself.
 
-describe('a build typed while a watcher is running', () => {
+describeWithEngine('a build typed while a watcher is running', () => {
     let workdir, instance
     after(async () => {
         instance?.kill()
@@ -220,7 +233,7 @@ describe('a build typed while a watcher is running', () => {
 // one level down about printing scores even when they pass, applied to the
 // skip itself.
 
-describe('a build that moved nothing', () => {
+describeWithEngine('a build that moved nothing', () => {
     let workdir
     after(() => rm(workdir, { recursive: true, force: true }))
 
@@ -248,7 +261,7 @@ describe('a build that moved nothing', () => {
     })
 })
 
-describe('audits that measure the audit server', () => {
+describeWithEngine('audits that measure the audit server', () => {
     let workdir
     after(() => rm(workdir, { recursive: true, force: true }))
 
